@@ -1,22 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  UserPlus, 
-  Search, 
-  Vote, 
-  Trophy, 
   ChevronRight, 
   ChevronLeft,
-  CheckCircle2,
   Volume2,
   VolumeX,
   Globe,
-  HeartHandshake,
   Info,
-  MapPin,
   Mic,
-  MicOff,
-  Share2
+  MicOff
 } from 'lucide-react';
+import './firebase'; // Initialize Google Services (Firebase)
+import StepCard from './components/StepCard';
 
 const TRANSLATIONS = {
   en: {
@@ -243,25 +237,64 @@ export default function ElectionAssistant() {
   const synthRef = useRef(null);
   const recognitionRef = useRef(null);
 
+  const handleNext = React.useCallback(() => {
+    setCurrentStep(prev => {
+      if (prev < steps.length - 1) {
+        setEvmVoted(false);
+        return prev + 1;
+      }
+      return prev;
+    });
+  }, [steps.length]);
+
+  const handlePrev = React.useCallback(() => {
+    setCurrentStep(prev => {
+      if (prev > 0) {
+        setEvmVoted(false);
+        return prev - 1;
+      }
+      return prev;
+    });
+  }, []);
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       if ('speechSynthesis' in window) {
         synthRef.current = window.speechSynthesis;
+        // Preload voices to ensure Hindi is available
+        window.speechSynthesis.onvoiceschanged = () => {
+          window.speechSynthesis.getVoices();
+        };
       }
       
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = true;
-        recognitionRef.current.interimResults = false;
-        recognitionRef.current.lang = t.langCode;
+        recognitionRef.current.continuous = false; // Set to false to clear transcript automatically
+        recognitionRef.current.interimResults = true; 
+        
+        let lastCommandTime = 0; 
         
         recognitionRef.current.onresult = (event) => {
-          const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
-          if (transcript.includes(t.voiceKeywords.next) || transcript.includes('next')) {
+          const now = Date.now();
+          if (now - lastCommandTime < 1500) return; 
+          
+          let latestTranscript = event.results[event.results.length - 1][0].transcript.toLowerCase();
+          
+          if (latestTranscript.includes(t.voiceKeywords.next) || latestTranscript.includes('next') || latestTranscript.includes('aage')) {
             handleNext();
-          } else if (transcript.includes(t.voiceKeywords.prev) || transcript.includes('back') || transcript.includes('piche')) {
+            lastCommandTime = now;
+            recognitionRef.current.stop(); // Stop to clear the transcript buffer
+          } else if (latestTranscript.includes(t.voiceKeywords.prev) || latestTranscript.includes('back') || latestTranscript.includes('piche') || latestTranscript.includes('peeche')) {
             handlePrev();
+            lastCommandTime = now;
+            recognitionRef.current.stop(); // Stop to clear the transcript buffer
+          }
+        };
+        
+        recognitionRef.current.onend = () => {
+          if (voiceEnabled) {
+            try { recognitionRef.current.start(); } catch(e) { /* ignore */ }
           }
         };
       }
@@ -270,23 +303,14 @@ export default function ElectionAssistant() {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop();
     }
-  }, [language]);
+  }, [t.voiceKeywords.next, t.voiceKeywords.prev, handleNext, handlePrev, voiceEnabled]);
 
   useEffect(() => {
     if (synthRef.current) {
       synthRef.current.cancel();
       setIsPlaying(false);
     }
-    setEvmVoted(false);
   }, [currentStep, language]);
-
-  const handleNext = () => {
-    if (currentStep < steps.length - 1) setCurrentStep(prev => prev + 1);
-  };
-
-  const handlePrev = () => {
-    if (currentStep > 0) setCurrentStep(prev => prev - 1);
-  };
 
   const toggleAudio = () => {
     if (!synthRef.current) return;
@@ -297,8 +321,17 @@ export default function ElectionAssistant() {
     } else {
       let textToSpeak = `${stepInfo.title}. ${stepInfo.desc}. ${stepInfo.actions.join('. ')}`;
       if (stepInfo.showEVM) textToSpeak += `. ${t.evmPracticeText}`;
+      
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = t.langCode;
+      
+      // Try to find a specific voice for the language
+      const voices = synthRef.current.getVoices();
+      const specificVoice = voices.find(v => v.lang.includes(t.langCode) || v.lang.includes(t.langCode.split('-')[0]));
+      if (specificVoice) {
+        utterance.voice = specificVoice;
+      }
+
       utterance.rate = 0.85;
       utterance.onend = () => setIsPlaying(false);
       utterance.onerror = () => setIsPlaying(false);
@@ -376,6 +409,10 @@ export default function ElectionAssistant() {
             ))}
           </select>
         </div>
+
+        <a href="tel:1950" className="helpline-badge" title="National Election Helpline">
+          Helpline: 1950
+        </a>
         
         <button 
           className={`voice-cmd-btn ${voiceEnabled ? 'active' : ''}`}
@@ -426,64 +463,16 @@ export default function ElectionAssistant() {
           ))}
         </div>
 
-        <div className="step-card" key={stepInfo.id} aria-live="polite">
-          <h2 className="step-title" style={{ color: stepInfo.color }} tabIndex="0">{stepInfo.title}</h2>
-          <p className="step-desc-large" tabIndex="0">{stepInfo.desc}</p>
-          
-          <div className="action-list" role="list">
-            {stepInfo.actions.map((action, i) => (
-              <div 
-                className="action-item fade-in-action" 
-                key={i} 
-                role="listitem" 
-                tabIndex="0"
-                style={{ animationDelay: `${i * 0.15}s` }}
-              >
-                <CheckCircle2 className="action-icon" style={{ color: stepInfo.color }} size={32} aria-hidden="true" />
-                <span className="action-text-large">{action}</span>
-              </div>
-            ))}
-            
-            {stepInfo.showEVM && (
-              <div className="evm-simulator fade-in-action" style={{ animationDelay: '0.45s' }}>
-                <p className="evm-instructions">{t.evmPracticeText}</p>
-                <div className={`evm-machine ${evmVoted ? 'voted' : ''}`}>
-                  <div className="evm-candidate">👤 Candidate Name</div>
-                  <div className="evm-symbol">🌻</div>
-                  <button 
-                    className="evm-button" 
-                    onClick={handleEVMVote}
-                    disabled={evmVoted}
-                    aria-label="Vote for Candidate"
-                  ></button>
-                  <div className={`evm-light ${evmVoted ? 'on' : ''}`}></div>
-                </div>
-                {evmVoted && <p className="evm-success-text fade-in-action">{t.evmVotedText}</p>}
-              </div>
-            )}
-
-            {stepInfo.showBoothFinder && (
-              <button 
-                className="btn-special fade-in-action" 
-                onClick={handleFindBooth}
-                style={{ animationDelay: '0.45s', backgroundColor: '#059669' }}
-                disabled={isFindingBooth}
-              >
-                <MapPin size={24} /> {isFindingBooth ? "..." : t.findBoothBtn}
-              </button>
-            )}
-
-            {stepInfo.showShare && (
-              <button 
-                className="btn-special fade-in-action" 
-                onClick={handleWhatsAppShare}
-                style={{ animationDelay: '0.45s', backgroundColor: '#25D366', color: 'white' }}
-              >
-                <Share2 size={24} /> {t.whatsappBtn}
-              </button>
-            )}
-          </div>
-        </div>
+        <StepCard
+          key={stepInfo.id}
+          stepInfo={stepInfo}
+          t={t}
+          evmVoted={evmVoted}
+          handleEVMVote={handleEVMVote}
+          handleFindBooth={handleFindBooth}
+          handleWhatsAppShare={handleWhatsAppShare}
+          isFindingBooth={isFindingBooth}
+        />
 
         <div className="controls">
           <button 
